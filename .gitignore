@@ -1,0 +1,19 @@
+# dependencies
+node_modules/
+
+# runtime artifacts（导出含客户聊天/评价数据，严禁入库）
+output/
+logs/
+
+# 运行时自动抓取的接口模板（会自动重建）
+config/reviews-template.json
+
+# 用户私有配置：店铺账号/mallId/端口（含敏感信息，严禁入库；参考 config/shops.example.json）
+config/shops.json
+
+# 本地备份
+backups/
+
+# misc
+*.log
+.DS_Store

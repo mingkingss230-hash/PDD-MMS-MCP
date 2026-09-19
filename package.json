@@ -1,0 +1,20 @@
+{
+  "name": "pdd-mms-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "description": "拼多多商家后台 MCP 工具集：经已登录 Chrome CDP，页面内发请求，anti-content 由页面自生成。提供评价、客服聊天、经营总览、商品、推广等只读取数能力。",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "smoke": "node scripts/smoke.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "exceljs": "^4.4.0",
+    "opentype.js": "^2.0.0",
+    "playwright-core": "^1.53.0",
+    "zod": "^3.25.0"
+  }
+}
