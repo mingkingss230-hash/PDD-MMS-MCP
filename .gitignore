@@ -8,12 +8,47 @@ logs/
 # 运行时自动抓取的接口模板（会自动重建）
 config/reviews-template.json
 
-# 用户私有配置：店铺账号/mallId/端口（含敏感信息，严禁入库；参考 config/shops.example.json）
+# 多店铺配置（含明文账密）一律不入库；仓库内仅保留 shops.example.json 占位模板
 config/shops.json
-
-# 本地备份
-backups/
 
 # misc
 *.log
 .DS_Store
+
+# 运行时数据抓取产物与本地调试工件（不得入库）
+artifacts/
+after2.*
+records-*
+*.ndjson
+*.manifest.json
+raw_*.json
+trade*.json
+promo*.json
+funds*.json
+verify*.json
+zuodan*.json
+*-payload*.json
+*_payload*.json
+combos.json
+create-args.json
+fix-args.json
+update_batch.json
+fill-plan*.json
+final-values*.json
+port-identity.json
+# 本地业务编排、抓包与调试脚本不入库；通用 MCP 代码放在 src/
+scripts/*
+!scripts/smoke.js
+src/__pycache__/
+/backfill-feishu.mjs
+/capture_funds.py
+/checkmall.mjs
+/click_targets.py
+/click_xy.py
+/fetch_feishu_day.py
+/getfunds.py
+/inspect.py
+/netcap.py
+/docs/goods-create-api.md
+/docs/goods-properties.md
+/test/promotion-channel.test.js

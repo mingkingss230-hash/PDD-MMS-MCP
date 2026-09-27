@@ -27,18 +27,19 @@ for r in raw[1:]:
   date.fromisoformat(label)
   if not start<=label<=end:raise ValueError('File date out of range')
   item['date']=label
- goods=str(item.get('商品ID','unit'));key=(goods,item.get('date'),item.get('hour'))
- if key in keys:raise ValueError('Duplicate goods/date/hour row')
- keys.add(key);groups.setdefault(goods,set()).add(item.get('hour',item['date']));rows.append(item)
+ goods=str(item.get('商品ID','unit'));scene=str(item.get('推广场景',''))
+ key=(goods,scene,item.get('date'),item.get('hour'))
+ if key in keys:raise ValueError('Duplicate goods/scene/date/hour row')
+ keys.add(key);groups.setdefault((goods,scene),set()).add(item.get('hour',item['date']));rows.append(item)
 if total is None:raise ValueError('Missing native total')
 checks={}
 for k in ['成交花费(元)','总花费(元)','交易额(元)','净交易额(元)','成交笔数','净成交笔数','曝光量','点击量']:
  if k not in headers:continue
  try:
-  actual=sum((Decimal(str(r[k])) for r in rows),Decimal(0));expected=Decimal(str(total[k]))
+  actual=sum((Decimal(str(r[k])) for r in rows if str(r[k]) not in ('','-')),Decimal(0));expected=Decimal(str(total[k]))
   checks[k]={'sum':str(actual),'nativeTotal':str(expected),'matches':abs(actual-expected)<=Decimal('.01')}
  except (InvalidOperation,TypeError):checks[k]={'matches':None,'reason':'platform unavailable/non-numeric; not zero'}
 expected_days=(date.fromisoformat(end)-date.fromisoformat(start)).days+1
 complete=bool(groups) and all(len(v)==(24 if mode.endswith('hourly') else expected_days) for v in groups.values())
-result={'headers':headers,'rows':rows,'nativeTotal':total,'notes':notes,'goodsCount':len(groups) if mode=='shop-hourly' else 1,'validation':{'dateValid':True,'uniqueRows':True,'hoursComplete':complete if mode.endswith('hourly') else None,'daysComplete':complete if mode=='unit-daily' else None,'totals':checks}}
+result={'headers':headers,'rows':rows,'nativeTotal':total,'notes':notes,'goodsCount':len({str(r['商品ID']) for r in rows}) if mode=='shop-hourly' else 1,'validation':{'dateValid':True,'uniqueRows':True,'hoursComplete':complete if mode.endswith('hourly') else None,'daysComplete':complete if mode=='unit-daily' else None,'totals':checks}}
 print(json.dumps(result,ensure_ascii=True))

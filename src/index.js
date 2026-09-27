@@ -4,14 +4,26 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getBrowser, getMmsPage, waitForMmsFetch } from './cdp.js';
+import { getBrowser, getMmsPage, getPddMobilePage, waitForMmsFetch } from './cdp.js';
 import { getEnvInfo } from './bridge.js';
 import { listReviews, captureReviewsTemplate } from './reviews.js';
 import { listCsAccounts, exportChats } from './chat.js';
 import { toReviewsCsv } from './excel.js';
 import { getDataOverview } from './overview.js';
 import { getGoodsData, getGoodsDetailAnalysis, getNavigatorList } from './goods.js';
+import {
+  buildGoodsCommitPayload,
+  buildGoodsProperties,
+  buildOrderedImagePlan,
+  captureGoodsCommitTemplate,
+  parseGoodsPropertyTemplate,
+  submitGoodsCommit,
+  uploadGoodsImages,
+} from './goods-create.js';
 import { getPromotionData } from './promotion.js';
+import { listPddMobileReviews, listPddSelectedPrints, listPddExpertNotes } from './pdd-mobile-reviews.js';
+import { getPddMobileGoods } from './pdd-mobile.js';
+import { collectPddMobileBundle } from './pdd-mobile-bundle.js';
 import { getOperationLogs } from './promotion-operations.js';
 import { getPromotionExport } from './promotion-export.js';
 import { getCreativeDaily, getPromotionDetail, getPromotionList, withPromotionPage } from './promotion-detail.js';
@@ -262,6 +274,193 @@ server.registerTool('pdd_promotion_detail', {
   annotations: {readOnlyHint:true,destructiveHint:false},
   inputSchema: {...SHOP_PARAM,cdpUrl:z.string().optional().describe('明确选择店铺的本机CDP HTTP端点；与shop互斥，不改全局配置'),adId:z.string().regex(/^[1-9]\d*$/),expectedMallId:z.string().regex(/^[1-9]\d*$/),date:z.string().default('yesterday').describe('yesterday 或 YYYY-MM-DD；北京时间')},
 }, async(args)=>{try{return text(await withPromotionPage(args,page=>getPromotionDetail(page,args)));}catch(e){return errText(e);}});
+
+/* ---------------- pdd_goods_upload_images ---------------- */
+server.registerTool('pdd_goods_upload_images', {
+  title: '商品图片顺序上传',
+  description: '在当前已登录的拼多多页面环境内逐张串行上传商品图片，严格保留 paths 传入顺序；不排序、不并发、不混入旧图片。调用方必须先按业务规则排好主图/商详图顺序。',
+  inputSchema: {
+    ...SHOP_PARAM,
+    paths: z.array(z.string().min(1)).min(1).max(100).describe('已按最终顺序排列的本地图片绝对路径；工具不会自动排序'),
+  },
+  annotations: { readOnlyHint: false, destructiveHint: false },
+}, async (args) => {
+  try {
+    const page = await getMmsPage({ shop: args.shop });
+    const uploaded = await uploadGoodsImages(page, args.paths);
+    return text({ ok: true, count: uploaded.length, ordered: true, items: uploaded });
+  } catch (e) {
+    return errText(e);
+  }
+});
+
+/* ---------------- pdd_goods_capture_template ---------------- */
+server.registerTool('pdd_goods_capture_template', {
+  title: '捕获商品提交模板',
+  description: '打开指定商品草稿的 goods_add 编辑页，捕获页面自身 goodsCommit/action/edit 请求模板，取得当前商品的 crawlerInfo/validate_message 等动态字段；只捕获不提交。',
+  inputSchema: {
+    ...SHOP_PARAM,
+    goodsId: z.union([z.string(), z.number()]).describe('商品ID'),
+    goodsCommitId: z.string().min(1).describe('商品提交单ID，来自 goods_add URL 的 id 参数'),
+  },
+  annotations: { readOnlyHint: true, destructiveHint: false },
+}, async (args) => {
+  try {
+    const page = await getMmsPage({ shop: args.shop });
+    const template = await captureGoodsCommitTemplate(page, {
+      goodsId: args.goodsId,
+      goodsCommitId: args.goodsCommitId,
+    });
+    return text({ ok: true, goodsId: String(args.goodsId), goodsCommitId: args.goodsCommitId, template });
+  } catch (e) {
+    return errText(e);
+  }
+});
+
+/* ---------------- pdd_goods_property_template ---------------- */
+server.registerTool('pdd_goods_property_template', {
+  title: '读取商品属性模板',
+  description: '在已登录拼多多商品编辑页读取类目商品属性模板、属性 ID、平台选项和当前选择；只读，不保存、不修改商品。',
+  inputSchema: {
+    ...SHOP_PARAM,
+    goodsId: z.union([z.string(), z.number()]).describe('商品ID'),
+    goodsCommitId: z.string().min(1).describe('商品提交单ID，来自 goods_add URL 的 id 参数'),
+    catId: z.union([z.string(), z.number()]).default(19146).describe('类目ID'),
+  },
+  annotations: { readOnlyHint: true, destructiveHint: false },
+}, async (args) => {
+  try {
+    const page = await getMmsPage({ shop: args.shop });
+    const template = await page.evaluate(async ({ catId, goodsCommitId, goodsId }) => {
+      const response = await fetch(`/draco-ms/mms/template/mall?catId=${encodeURIComponent(catId)}&goodsCommitId=${encodeURIComponent(goodsCommitId)}&goodsId=${encodeURIComponent(goodsId)}`, { credentials: 'include' });
+      return response.json();
+    }, { catId: args.catId, goodsCommitId: args.goodsCommitId, goodsId: args.goodsId });
+    return text({ ok: true, catId: String(args.catId), template: parseGoodsPropertyTemplate(template), raw: template });
+  } catch (e) {
+    return errText(e);
+  }
+});
+
+/* ---------------- pdd_goods_commit ---------------- */
+server.registerTool('pdd_goods_commit', {
+  title: '提交商品草稿/上架',
+  description: '在页面环境内合并已捕获模板和业务字段，并调用商品提交接口。mode=draft 只保存草稿；mode=submit 执行真实提交上架，必须由用户明确要求。gallery 保留传入 URL 顺序，SKU 图按 spec 映射。',
+  inputSchema: {
+    ...SHOP_PARAM,
+    goodsId: z.union([z.string(), z.number()]).describe('商品ID'),
+    goodsCommitId: z.string().min(1).describe('商品提交单ID'),
+    mode: z.enum(['draft', 'submit']).default('draft').describe('draft=保存草稿；submit=真实提交上架'),
+    catId: z.union([z.string(), z.number()]).optional().describe('类目ID；不传时从 template/payload.cat_id 读取'),
+    template: z.record(z.any()).default({}).describe('pdd_goods_capture_template 返回的完整模板；必须来自当前商品/当前编辑会话'),
+    payload: z.record(z.any()).default({}).describe('业务覆盖字段；显式传 goods_name/gallery/skus 等需要修改的字段'),
+    carouselUrls: z.array(z.string()).default([]).describe('已按主图顺序排列的永久图片URL，不自动排序'),
+    detailUrls: z.array(z.string()).default([]).describe('已按商详顺序排列的永久图片URL，不自动排序'),
+    skuUrls: z.array(z.object({ spec: z.string().min(1), url: z.string().url() })).default([]).describe('规格图映射；spec 必须和 skuRows[].spec 完全一致'),
+    properties: z.array(z.object({
+      name: z.string().min(1).describe('平台属性名称，例如佩戴方式、防水级别'),
+      content: z.string().min(1).describe('必须是该属性当前类目的平台选项原文，例如耳夹式、IPX7及以上'),
+      value: z.string().optional(),
+      valueUnit: z.string().optional(),
+    })).optional().describe('商品属性选择；先用 pdd_goods_property_template 获取平台选项，再按名称和值填写；不是 SKU 规格'),
+    skuRows: z.array(z.object({
+      spec: z.string().min(1),
+      specIdList: z.array(z.union([z.string(), z.number()])).default([]),
+      stock: z.number().nonnegative().optional(),
+      quantity_delta: z.number().nonnegative().optional(),
+      groupPriceYuan: z.union([z.string(), z.number()]).optional(),
+      priceYuan: z.union([z.string(), z.number()]).optional(),
+      groupPrice: z.number().nonnegative().optional(),
+      price: z.number().nonnegative().optional(),
+      outSkuSn: z.string().optional(),
+      id: z.number().optional(),
+      isOnsale: z.number().optional(),
+    }).passthrough()).optional().describe('最终SKU行；必须显式传入每个规格、specIdList、库存、拼单价、单买价和SKU编码，避免模板空占位SKU被提交'),
+  },
+  annotations: { readOnlyHint: false, destructiveHint: true },
+}, async (args) => {
+  try {
+    const page = await getMmsPage({ shop: args.shop });
+    let resolvedProperties;
+    if (Array.isArray(args.properties) && args.properties.length) {
+      const catId = args.catId ?? args.payload.cat_id ?? args.template.cat_id;
+      if (catId == null || catId === '') throw new Error('填写商品属性时必须提供 catId，或让 template/payload 包含 cat_id');
+      const propertyTemplate = await page.evaluate(async ({ catId: currentCatId, goodsCommitId, goodsId }) => {
+        const response = await fetch(`/draco-ms/mms/template/mall?catId=${encodeURIComponent(currentCatId)}&goodsCommitId=${encodeURIComponent(goodsCommitId)}&goodsId=${encodeURIComponent(goodsId)}`, { credentials: 'include' });
+        const body = await response.json();
+        if (!response.ok || body?.success === false || !body?.result) {
+          throw new Error(body?.error_msg || body?.errorMsg || '读取商品属性模板失败');
+        }
+        return body;
+      }, { catId, goodsCommitId: args.goodsCommitId, goodsId: args.goodsId });
+      resolvedProperties = buildGoodsProperties(propertyTemplate, args.properties);
+    }
+    const request = buildGoodsCommitPayload({
+      template: args.template,
+      payload: args.payload,
+      goodsId: args.goodsId,
+      goodsCommitId: args.goodsCommitId,
+      carouselUrls: args.carouselUrls,
+      detailUrls: args.detailUrls,
+      skuUrls: args.skuUrls,
+      skuRows: args.skuRows,
+      properties: resolvedProperties,
+      mode: args.mode,
+    });
+    const result = await submitGoodsCommit(page, request);
+    return text({ ok: true, mode: args.mode, goodsId: String(args.goodsId), goodsCommitId: args.goodsCommitId, result });
+  } catch (e) {
+    return errText(e);
+  }
+});
+
+/* ---------------- pdd_pdd_mobile_goods ---------------- */
+server.registerTool('pdd_pdd_mobile_goods', {
+  title: '买家端商品详情',
+  description: '打开已登录的拼多多买家端商品页，读取买家端渲染出的主图/详情图/SKU图/SKU规格/价格/销量/评价摘要。需要调试 Chrome 在买家端已有登录态；只读。',
+  inputSchema: { ...SHOP_PARAM, goodsId: z.union([z.string(), z.number()]).describe('商品ID'), waitMs: z.number().int().min(1000).max(30000).default(8000) },
+  annotations: { readOnlyHint: true, destructiveHint: false },
+}, async (args) => {
+  try {
+    const page = await getPddMobilePage({ shop: args.shop });
+    return text(await getPddMobileGoods(page, args.goodsId, { waitMs: args.waitMs }));
+  } catch (e) { return errText(e); }
+});
+
+server.registerTool('pdd_pdd_mobile_reviews', {
+  title: '买家端商品评价与买家秀',
+  description: '买家端商品页评价数据：评论内容、追评、SKU、买家秀图片、视频、时间、评价ID。分页只读；接口由买家端页面自身 fetch 发起。',
+  inputSchema: { ...SHOP_PARAM, goodsId: z.union([z.string(), z.number()]), mallId: z.union([z.string(), z.number()]).optional(), msn: z.string().optional(), pageNo: z.number().int().min(1).default(1), pageSize: z.number().int().min(1).max(100).default(20), pages: z.number().int().min(1).max(100).default(1), labelId: z.number().int().default(0) },
+  annotations: { readOnlyHint: true, destructiveHint: false },
+}, async (args) => {
+  try { const page = await getPddMobilePage({ shop: args.shop }); return text(await listPddMobileReviews(page, args)); } catch (e) { return errText(e); }
+});
+
+server.registerTool('pdd_pdd_selected_prints', {
+  title: '精选买家秀',
+  description: '读取买家端商品精选晒图/精选买家秀及其评论、SKU、图片。通过买家端真实评价接口的图/视频标签（label_id=800000000）读取，不猜测独立接口。只读。',
+  inputSchema: { ...SHOP_PARAM, goodsId: z.union([z.string(), z.number()]), pageNo: z.number().int().min(1).default(1), pageSize: z.number().int().min(1).max(100).default(20), pages: z.number().int().min(1).max(100).default(1) },
+  annotations: { readOnlyHint: true, destructiveHint: false },
+}, async (args) => {
+  try { const page = await getPddMobilePage({ shop: args.shop }); return text(await listPddSelectedPrints(page, args)); } catch (e) { return errText(e); }
+});
+
+server.registerTool('pdd_pdd_expert_notes', {
+  title: '买家端行家心得',
+  description: '读取商品行家心得内容、图片、视频、SKU和评价ID。店透视代码显示其页面请求为隐藏的 v.c({goods_id,page,size,channel})，但当前买家端页面未暴露可复用 endpoint；无可用数据时返回明确空结果，不猜测。只读。',
+  inputSchema: { ...SHOP_PARAM, goodsId: z.union([z.string(), z.number()]), pageNo: z.number().int().min(1).default(1), pageSize: z.number().int().min(1).max(100).default(100), channel: z.number().int().default(0) },
+  annotations: { readOnlyHint: true, destructiveHint: false },
+}, async (args) => {
+  try { const page = await getPddMobilePage({ shop: args.shop }); return text(await listPddExpertNotes(page, args)); } catch (e) { return errText(e); }
+});
+
+server.registerTool('pdd_pdd_mobile_bundle', {
+  title: '买家端商品素材总览',
+  description: '一次性读取买家端商品详情、主图、详情图、SKU、评价、买家秀；评价使用买家端真实 reviews 接口，精选晒图使用 label_id=800000000。只读。',
+  inputSchema: { ...SHOP_PARAM, goodsId: z.union([z.string(), z.number()]), waitMs: z.number().int().min(1000).max(30000).default(6000), reviewPages: z.number().int().min(0).max(100).default(1), reviewPageSize: z.number().int().min(1).max(100).default(20), includeSelectedPrints: z.boolean().default(true), includeExpertNotes: z.boolean().default(false), includeRaw: z.boolean().default(false) },
+  annotations: { readOnlyHint: true, destructiveHint: false },
+}, async (args) => {
+  try { const page = await getPddMobilePage({ shop: args.shop }); return text(await collectPddMobileBundle(page, args)); } catch (e) { return errText(e); }
+});
 
 /* ---------------- pdd_promotion_data ---------------- */
 server.registerTool('pdd_promotion_data', {
