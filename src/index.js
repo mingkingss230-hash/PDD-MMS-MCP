@@ -21,6 +21,8 @@ import {
   uploadGoodsImages,
 } from './goods-create.js';
 import { getPromotionData } from './promotion.js';
+import { getHistoryTrade } from './history.js';
+import { exportOrders } from './order-export.js';
 import { listPddMobileReviews, listPddSelectedPrints, listPddExpertNotes } from './pdd-mobile-reviews.js';
 import { getPddMobileGoods } from './pdd-mobile.js';
 import { collectPddMobileBundle } from './pdd-mobile-bundle.js';
@@ -182,6 +184,40 @@ server.registerTool('pdd_overview_data', {
   }
 });
 
+/* ---------------- pdd_history_data ---------------- */
+server.registerTool('pdd_history_data', {
+  title: '历史经营数据',
+  description: '读取指定日期范围的店铺历史成交数据：支付金额、支付订单、支付买家、退款金额等。只读，最多31天。',
+  inputSchema: { ...SHOP_PARAM,
+    startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  },
+}, async (args) => {
+  try {
+    const page = await getMmsPage({ shop: args.shop });
+    return text(await getHistoryTrade(page, args));
+  } catch (e) { return errText(e); }
+});
+
+/* ---------------- pdd_order_export ---------------- */
+server.registerTool('pdd_order_export', {
+  title: '历史订单导出',
+  description: '按指定日期范围生成并下载拼多多对账报表，只读，不修改订单；日期范围最多3个月。',
+  inputSchema: { ...SHOP_PARAM,
+    startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    templateName: z.enum(['对账报表', '自定义报表']).default('对账报表'),
+    waitSeconds: z.number().int().min(1).max(120).default(20),
+    taskId: z.string().regex(/^\d+$/).optional(),
+    outDir: z.string().optional(),
+  },
+}, async (args) => {
+  try {
+    const page = await getMmsPage({ shop: args.shop });
+    return text(await exportOrders(page, args));
+  } catch (e) { return errText(e); }
+});
+
 /* ---------------- pdd_goods_data ---------------- */
 server.registerTool('pdd_goods_data', {
   title: '商品数据',
@@ -302,6 +338,7 @@ server.registerTool('pdd_goods_capture_template', {
     ...SHOP_PARAM,
     goodsId: z.union([z.string(), z.number()]).describe('商品ID'),
     goodsCommitId: z.string().min(1).describe('商品提交单ID，来自 goods_add URL 的 id 参数'),
+    force: z.boolean().default(false).describe('强制重新打开页面并捕获模板；默认复用当前页面会话缓存'),
   },
   annotations: { readOnlyHint: true, destructiveHint: false },
 }, async (args) => {
@@ -310,6 +347,7 @@ server.registerTool('pdd_goods_capture_template', {
     const template = await captureGoodsCommitTemplate(page, {
       goodsId: args.goodsId,
       goodsCommitId: args.goodsCommitId,
+      force: args.force,
     });
     return text({ ok: true, goodsId: String(args.goodsId), goodsCommitId: args.goodsCommitId, template });
   } catch (e) {
