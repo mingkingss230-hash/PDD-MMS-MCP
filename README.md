@@ -9,8 +9,6 @@
 
 任何支持 MCP 的客户端（ZCode、Claude Desktop 等）都能调用纯数据接口；带文件产出的操作由 `scripts/` 下的独立脚本完成。
 
-店透视代码分析结论：商品详情由买家端页面初始化数据提供；精选晒图由同一评价接口的图/视频标签提供。行家心得组件在店透视 bundle 中调用隐藏页面内部函数 `v.c({ goods_id, page, size, channel })`，但 bundle 未包含可验证的公开 endpoint，当前 MCP 返回带 warning 的空结果，禁止把候选 URL 当成事实。
-
 
 ## 公开仓库边界
 
